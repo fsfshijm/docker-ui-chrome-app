@@ -12,8 +12,6 @@ Please note this is a beta version and only provides a basic set of features.
 I'm actively working to add new features and bug fixing.
 Any feedback is more than welcome!
 
-[![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/felixgborrego/docker-ui-chrome-app)
-
 ![Home](docs/screenshots/home.png)
 
 ![Container](docs/screenshots/container.png)
@@ -35,9 +33,11 @@ Any feedback is more than welcome!
 
 ### Config
 
-[Connect to Boot2Docker on OS X](https://github.com/felixgborrego/docker-ui-chrome-app/wiki/Mac-OS-X)
+[Connect on OS X](https://github.com/felixgborrego/docker-ui-chrome-app/wiki/Mac-OS-X)
 
-[Connect to Linux](https://github.com/felixgborrego/docker-ui-chrome-app/wiki/linux)
+[Connect on Linux](https://github.com/felixgborrego/docker-ui-chrome-app/wiki/linux)
+
+[Connect on Windows](https://github.com/felixgborrego/docker-ui-chrome-app/wiki/windows)
 
 ### Stack
 
@@ -46,5 +46,4 @@ Any feedback is more than welcome!
 *  Bootstrap
 *  Bower
 *  Momentjs
-*  Chrome packaged app framework
   

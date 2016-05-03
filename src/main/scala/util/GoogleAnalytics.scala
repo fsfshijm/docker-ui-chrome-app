@@ -14,27 +14,8 @@ object googleAnalytics {
 
   def sendEvent(category: String, action: String, label: String = "") = tracker.sendEvent(category, action, label)
 
-  object interface extends js.GlobalScope {
 
-    def analytics: Analytics = js.native
-
-    trait Analytics extends js.Object {
-      def getService(name: String): Service = js.native
-    }
-
-    trait Service extends js.Object {
-      def getTracker(id: String): Tracker = js.native
-    }
-
-    trait Tracker extends js.Object {
-      def sendAppView(name: String): Unit = js.native
-
-      def sendEvent(category: String, action: String, label: String): Unit = js.native
-    }
-
-  }
-
-  object EventCategory{
+  object EventCategory {
     val Connection = "Connection"
     val Save = "Save"
     val Image = "Image"
@@ -46,12 +27,38 @@ object googleAnalytics {
     val Connected = "Connected"
     val Unable = "Unable"
     val InvalidVersion = "InvalidVersion"
+    val UnsupportedOptionalVersion = "UnsupportedOptionalVersion"
     val Try = "Try"
     val Pull = "Pull"
     val GC = "GC"
     val Show = "Show"
     val Start = "Start"
+    val Remove = "Remove"
     val Stop = "Stop"
   }
+
+}
+
+@js.native
+object interface extends js.GlobalScope {
+
+    def analytics: Analytics = js.native
+
+  @js.native
+    trait Analytics extends js.Object {
+      def getService(name: String): Service = js.native
+    }
+
+  @js.native
+    trait Service extends js.Object {
+      def getTracker(id: String): Tracker = js.native
+    }
+
+  @js.native
+    trait Tracker extends js.Object {
+      def sendAppView(name: String): Unit = js.native
+
+      def sendEvent(category: String, action: String, label: String): Unit = js.native
+    }
 
 }

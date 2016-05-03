@@ -19,13 +19,13 @@ object Button {
       if (t.state.running)
         "glyphicon glyphicon-refresh glyphicon-spin"
       else
-        "glyphicon glyphicon " + t.props.icon
+        "glyphicon " + t.props.icon
 
-    def text = if (t.state.running) "" else " " + t.props.text
+    def text = t.props.text
 
     def click() = {
       t.modState(s => s.copy(running = true))
-      t.props.command().map { _ =>
+      t.props.command().andThen { case _ =>
         t.modState(s => s.copy(running = false))
       }
     }

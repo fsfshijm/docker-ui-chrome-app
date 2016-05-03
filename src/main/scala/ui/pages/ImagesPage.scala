@@ -73,7 +73,8 @@ object ImagesPage extends Page {
       }.onFailure {
         case ex: AjaxException =>
           log.error("ImagesPage", "Unable to get Metadata", ex)
-          t.modState(s => s.copy(error = Some(s"Unable to connect"), searching = false))
+          val error = ex.xhr.responseText.take(300)
+          t.modState(s => s.copy(error = Some(s"Unable to connect - $error"), searching = false))
       }
     }
 
@@ -128,18 +129,18 @@ object ImagesPageRender {
         <.table(^.className := "table table-hover table-striped",
           <.thead(
             <.tr(
-              <.th("Id"),
-              <.th("Tags"),
-              <.th("Created"),
-              <.th("Size")
+              <.th("Id", ^.className:="col-xs-2 col-md-1"),
+              <.th("Tags", ^.className:="col-xs-5 col-md-9"),
+              <.th("Created",  ^.className:="hidden-xs col-xs-2 col-md-1"),
+              <.th("Size",  ^.className:="col-xs-1 col-md-1")
             )
           ),
           <.tbody(
             S.localImages.map { img =>
               <.tr(
                 <.td(P.ref.link(ImagePage(img, P.ref))(img.id)),
-                <.td(img.RepoTags.mkString(", ")),
-                <.td(img.created),
+                <.td(^.className:="break-text", img.RepoTags.mkString(", ")),
+                <.td(^.className:="hidden-xs", img.created),
                 <.td(img.virtualSize)
               )
             }

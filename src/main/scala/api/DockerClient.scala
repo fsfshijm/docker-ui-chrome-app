@@ -2,14 +2,15 @@ package api
 
 import api.DockerClientConfig.APIRequired._
 import model._
+import model.stats.ContainerStats
 import org.scalajs.dom.ext.{Ajax, AjaxException}
 import org.scalajs.dom.raw._
-import upickle._
-import util.EventsCustomParser
+import upickle.default._
 import util.EventsCustomParser.DockerEventStream
 import util.PullEventsCustomParser.{EventStatus, EventStream}
 import util.googleAnalytics._
 import util.logger._
+import util.{EventsCustomParser, FutureUtils, StatsCustomParser}
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.{Future, Promise}
@@ -20,12 +21,17 @@ object DockerClientConfig {
   val HttpExternalTimeOut = 20 * 1000
   val PingTimeOut = 4 * 1000
   val DockerVersion = s"v$Mayor.$Minor"
+  val DockerOptionalVersion = s"v${APIOptional.Mayor}.${APIOptional.Minor}"
 
   object APIRequired {
     val Mayor = 1
     val Minor = 17
   }
 
+  object APIOptional {
+    val Mayor = 1
+    val Minor = 19
+  }
 
   val KeepInGarbageCollection = 10
 }
@@ -35,6 +41,7 @@ case class DockerClient(connection: Connection) {
   import DockerClientConfig._
 
   val url = connection.url + "/" + DockerVersion
+  val urlOptional = connection.url + "/" + DockerOptionalVersion
 
   // https://docs.docker.com/reference/api/docker_remote_api_v1.17/#ping-the-docker-server
   def ping(): Future[Unit] =
@@ -47,14 +54,19 @@ case class DockerClient(connection: Connection) {
     test <- ping()
     info <- info()
     version <- version()
-    containers <- containers(all = false)
+    containers <- containers(all = false, extraInfo = false)
   } yield DockerMetadata(connection, info, version, containers)
 
+  def containersRunningWithExtraInfo(): Future[Seq[Container]] =
+    containers(all = false, extraInfo = true)
 
-  def containersInfo(): Future[ContainersInfo] = for {
-    r <- containers(all = false)
-    all <- containers(all = true)
-  } yield ContainersInfo(r, all)
+
+  def containerRunning(): Future[Seq[Container]] =
+    containers(all = false, extraInfo = false)
+
+  def containersHistory(running: Seq[Container]): Future[Seq[Container]] = for {
+    all <- containers(all = true, extraInfo = false)
+  } yield all.diff(running)
 
 
   // https://docs.docker.com/reference/api/docker_remote_api_v1.17/#inspect-a-container
@@ -89,19 +101,21 @@ case class DockerClient(connection: Connection) {
   def removeImage(imageId: String): Future[Unit] =
     Ajax.delete(s"$url/images/$imageId", timeout = HttpTimeOut).map { xhr =>
       log.info("[dockerClient.removeImage] return: " + xhr.readyState)
-    }.recover {
+    }.transform(identity, ex => ex match {
       case ex: AjaxException =>
         log.info(s"Unable to delete $imageId} ${ex.xhr.responseText}")
-    }
+        new Exception(ex.xhr.responseText)
+    })
 
   def garbageCollectionImages(): Future[Seq[Image]] = {
+    log.info("Staring garbageCollectionImages")
     sendEvent(EventCategory.Image, EventAction.GC)
     val usedImagesId: Future[Seq[String]] = for {
-      containers <- containers(all = true)
-      containersInfo <- Future.sequence(containers.map(container => containerInfo(container.Id)))
+      containers <- containers(all = true, extraInfo = false)
+      containersInfo <-  FutureUtils.sequenceWithDelay(containers.toList.map(container => () => containerInfo(container.Id)))
     } yield containersInfo.map(_.Image)
 
-    // process the tree removing any used Image and his parents
+    // process the tree removing any used Image and its parents
     def filterUsed(images: Seq[Image], imageId: String): Seq[Image] = {
       val imageFound = images.filter(_.Id == imageId)
       val remainingImages = images.diff(imageFound)
@@ -118,6 +132,7 @@ case class DockerClient(connection: Connection) {
       all <- images(all = true)
       usedIds <- usedImagesId
     } yield {
+        log.info(s"Calculating imagesToGC all: ${all.size}, usedIds: ${usedIds.size} ")
         val noUsedImages = usedIds.foldLeft(all) {
           case (remaining, imageId) => filterUsed(remaining, imageId)
         }
@@ -125,20 +140,22 @@ case class DockerClient(connection: Connection) {
       }
 
     imagesToGC.flatMap { images =>
-      Future.sequence(images.map(image => removeImage(image)))
+      log.info(s"imagesToGC: ${images.size} ")
+     val tasks = images.map(image => ()  => removeImage(image)).toList
+      FutureUtils.sequenceWithDelay(tasks)
     }.flatMap(_ => images())
   }
 
 
-  def garbageCollectionContainers(): Future[ContainersInfo] = {
+  def garbageCollectionContainers(): Future[Unit] = {
     sendEvent(EventCategory.Container, EventAction.GC)
-    containers(all = true).flatMap { all =>
+    containers(all = true, extraInfo = false).flatMap { all =>
       def delete(containers: List[Container]): Future[Unit] = containers match {
         case head :: tail => removeContainer(head.Id).andThen { case _ => delete(tail) }
         case Nil => Future.successful(())
       }
       delete(all.drop(KeepInGarbageCollection).toList)
-    }.flatMap(_ => containersInfo())
+    }
   }
 
   def top(containerId: String): Future[ContainerTop] =
@@ -177,9 +194,10 @@ case class DockerClient(connection: Connection) {
     }
 
   // https://docs.docker.com/reference/api/docker_remote_api_v1.17/#list-containers
-  private def containers(all: Boolean): Future[Seq[Container]] =
-    Ajax.get(s"$url/containers/json?all=$all&size=true", timeout = HttpTimeOut).map { xhr =>
-      log.info("[dockerClient.containers]")
+  // Note: gather extraInfo is slower (ex: SizeRootFs, SizeRw).
+  private def containers(all: Boolean, extraInfo: Boolean): Future[Seq[Container]] =
+    Ajax.get(s"$url/containers/json?all=$all&size=$extraInfo", timeout = HttpTimeOut).map { xhr =>
+      log.info(s"[dockerClient.containers]")
       read[Seq[Container]](xhr.responseText)
     }
 
@@ -276,6 +294,27 @@ case class DockerClient(connection: Connection) {
       read[Seq[FileSystemChange]](xhr.responseText)
     }
   }
+
+  // https://docs.docker.com/engine/reference/api/docker_remote_api_v1.19/#get-container-stats-based-on-resource-usage
+  def containerStats(containerId: String)(updateUI: (Option[ContainerStats], ConnectedStream) => Unit): Unit = {
+    val xhr = new XMLHttpRequest()
+    val stream = new ConnectedStream {
+      override def abort(): Unit = {
+        xhr.abort()
+      }
+    }
+    xhr.onreadystatechange = { _: Event =>
+      log.debug("container stats update")
+      val stats = StatsCustomParser.parse(xhr.responseText)
+      updateUI(stats, stream)
+    }
+
+    val statsUrl = s"$url/containers/$containerId/stats"
+    xhr.open("GET", statsUrl, async = true)
+    log.info(s"[dockerClient.containerStats] $statsUrl")
+    xhr.send()
+  }
+
 }
 
 trait ConnectedStream {

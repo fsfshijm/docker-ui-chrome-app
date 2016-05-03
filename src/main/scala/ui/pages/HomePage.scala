@@ -29,17 +29,25 @@ case object HomePage extends Page {
         client.metadata().map { info =>
           t.modState(s => s.copy(info = Some(info), error = None))
           loadEvents()
+          loadContainersSize(info)
         }.onFailure {
           case ex: Exception =>
             log.error("HomePage", "Unable to get Metadata", ex)
             ConfigStorage.isRunningBoot2Docker.map {
               case false => s"Unable to connect to ${t.props.url}, is Docker daemon running?"
-              case true => s"Unable to connect to ${t.props.url}, is Boot2docker running?"
+              case true => s"Unable to connect to ${t.props.url}, is Boot2docker/docker-machine running?"
             }.map { msg =>
               t.modState(s => s.copy(error = Some(msg)))
             }
         }
 
+      def loadContainersSize(info: DockerMetadata) =
+        client.containersRunningWithExtraInfo.map { containers =>
+          t.modState { s =>
+            s.copy(info = Some(info.copy(containers = containers)))
+          }
+        }
+      
       def loadEvents() = {
         val stream = client.events { events => //streaming
           t.modState(s => s.copy(events = events))
@@ -88,13 +96,14 @@ object HomePageRender {
     )
     <.div(
       ContainersCard(docker, ref)(() => B.refresh()),
-      InfoCard(info, InfoCard.SMALL, Some("System"), footer = infoFooter)
+      InfoCard(info, InfoCard.SMALL, Some("System")),
+      !docker.info.swarmMasterInfo.isEmpty ?= InfoCard(docker.info.swarmMasterInfo, InfoCard.SMALL, Some("Swarm Info")),
+      !docker.info.swarmNodesDescription.isEmpty ?= docker.info.swarmNodesDescription.map { nodeInfo =>
+        InfoCard(nodeInfo, InfoCard.SMALL, nodeInfo.keys.headOption)
+      }
     )
   }
 
-  val infoFooter = Some(<.div(^.className:="panel-footer alert-warning"," Please note this is a beta version, ",
-    <.a(^.href := "https://github.com/felixgborrego/docker-ui-chrome-app/issues",^.target:="blank", "any feedback is more than welcome!"
-    )))
 
   def vdomEvents(events: Seq[DockerEvent]) = {
     val values = events.map(e => Map("Status" -> e.status, "Id" -> e.shortId, "From" -> e.from, "Time" -> e.since))

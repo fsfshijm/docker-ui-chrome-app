@@ -1,15 +1,17 @@
 package ui.pages
 
+import api.ConnectedStream
 import japgolly.scalajs.react.vdom.prefix_<^._
 import japgolly.scalajs.react.{BackendScope, ReactComponentB, ReactElement}
+import model.stats.ContainerStats
 import model.{ContainerInfo, ContainerTop, FileSystemChange}
 import org.scalajs.dom.raw.WebSocket
 import ui.WorkbenchRef
 import ui.widgets.TerminalCard.TerminalInfo
 import ui.widgets._
-import util.StringUtils
 import util.googleAnalytics._
 import util.logger._
+import util.{CopyPasteUtil, StringUtils}
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
@@ -21,6 +23,8 @@ object ContainerPage {
                    changes: Seq[FileSystemChange] = Seq.empty,
                    error: Option[String] = None,
                    actionStopping: Boolean = false,
+                   stats: Option[ContainerStats] = None,
+                   statsConnectedStream: Option[ConnectedStream] = None,
                    tabSelected: ContainerPageTab = TabNone)
 
   case class Props(ref: WorkbenchRef, containerId: String)
@@ -41,10 +45,12 @@ object ContainerPage {
           t.modState(s => s.copy(error = Some(s"Unable to connect")))
       }
 
-      result.onSuccess {
-        case _ => t.modState(s => s.copy(tabSelected = TabTerminal))
+      result.onSuccess { case _ =>
+        t.modState(s => s.copy(tabSelected = TabTerminal))
       }
     }
+
+    def willUnMount(): Unit = stopStats()
 
     def stop() =
       t.props.ref.client.get.stopContainer(t.props.containerId).map { info =>
@@ -69,6 +75,10 @@ object ContainerPage {
       }
 
     def showTab(tab: ContainerPageTab) = {
+      tab match {
+        case TabStats => startStats()
+        case _ => stopStats()
+      }
       t.modState(s => s.copy(tabSelected = tab))
     }
 
@@ -99,11 +109,22 @@ object ContainerPage {
         case _ => Seq.empty
       }
     }
+
+    def startStats(): Unit = t.props.ref.client.map { client =>
+      client.containerStats(t.props.containerId) { (stats, stream) =>
+        t.modState(s => s.copy(stats = stats, statsConnectedStream = Some(stream)))
+      }
+    }
+
+    def stopStats(): Unit = t.state.statsConnectedStream.map { stream =>
+      stream.abort()
+      t.modState(s => s.copy(statsConnectedStream = None))
+    }
   }
 
 
   def apply(containerId: String, ref: WorkbenchRef) = new Page {
-    val id = "Container"
+    val id = ContainersPage.id
 
     def component(ref: WorkbenchRef) = {
       val props = Props(ref, containerId)
@@ -121,6 +142,7 @@ object ContainerPageRender {
     .backend(new Backend(_))
     .render((P, S, B) => vdom(P, S, B))
     .componentWillMount(_.backend.willMount)
+    .componentWillUnmount(_.backend.willUnMount)
     .build
 
 
@@ -150,7 +172,8 @@ object ContainerPageRender {
 
     val networkInfo = Map(
       "Ip" -> containerInfo.NetworkSettings.IPAddress,
-      "Port Mapping" -> ports
+      "Port Mapping" -> ports,
+      "Links" ->  containerInfo.HostConfig.links
     ) ++
       containerInfo.Volumes.map { case (k, v) => ("volume: " + k, v) }
 
@@ -196,7 +219,7 @@ object ContainerPageRender {
               if (info.State.Running)
                 Button("Stop", "glyphicon-stop")(B.stop)
               else
-                Button("Star", "glyphicon-play")(B.start)
+                Button("Start", "glyphicon-play")(B.start)
           }
         ),
         <.div(^.className := "btn-group",
@@ -226,6 +249,9 @@ object ContainerPageRender {
               <.i(^.className := (if (terminalInfo.stdinOpened) "fa fa-chain" else "fa fa-chain-broken"))
             )
           ),
+          S.info.exists(_.State.Running) ?= <.li(^.role := "presentation", (S.tabSelected == TabStats) ?= (^.className := "active"),
+            <.a(^.onClick --> B.showTab(TabStats), <.i(^.className := "fa fa-bar-chart"), " Stats")
+          ),
           S.top.map(s =>
             <.li(^.role := "presentation", (S.tabSelected == TabTop) ?= (^.className := "active"),
               <.a(^.onClick --> B.showTab(TabTop), ^.className := "glyphicon glyphicon-transfer", " Top")
@@ -234,15 +260,20 @@ object ContainerPageRender {
             <.a(^.onClick --> B.showTab(TabChanges), <.i(^.className := "fa fa-history"), " File system changes")
           )
         ),
-        (S.tabSelected == TabTerminal) ?= TerminalCard(terminalInfo)(B.attach),
-        (S.tabSelected == TabTop && S.top.isDefined) ?= S.top.map(vdomTop).get,
-        (S.tabSelected == TabChanges) ?= S.info.map(vdomChanges(S.changes, _))
+        <.div(^.className := "panel-body panel-config",
+          (S.tabSelected == TabTerminal) ?= TerminalCard(terminalInfo)(B.attach),
+          (S.tabSelected == TabTop && S.top.isDefined) ?= S.top.map(vdomTop).get,
+          (S.tabSelected == TabChanges) ?= S.info.map(vdomChanges(S.changes, _)),
+          (S.tabSelected == TabStats) ?= vdomStats(S, B)
+        )
       ),
-      <.div(^.className := "panel-footer",
+      <.div(^.className := "panel-footer docker-cli",
         B.textCommands.map { case (cmd, info) =>
+          val cmdName = info.split(" ").head
           <.div(
             <.span(^.className := "glyphicon glyphicon-console pull-left"),
-            <.i(<.code(cmd), <.span(^.className := "small text-muted", info))
+            <.i(<.code(^.className := cmdName)(cmd), <.span(^.className := "small text-muted", info)),
+            <.a(^.onClick --> CopyPasteUtil.copyToClipboard(cmdName)," ", <.i(^.className := "fa fa-clipboard"))
           )
         }
       )
@@ -266,6 +297,17 @@ object ContainerPageRender {
     TableCard(values)
   }
 
+  def vdomStats(S: State, B: Backend) = {
+    S.stats.map { stats =>
+      val values = Seq(Map[String, String](
+        "CPU %" -> StringUtils.toPercent(stats.cpuPercent),
+        "MEM USAGE/LIMIT" -> (StringUtils.bytesToSize(stats.memory.toLong) + " / " + StringUtils.bytesToSize(stats.memoryLimit.toLong)),
+        "MEM %" -> StringUtils.toPercent(stats.memPercent)
+      ))
+      TableCard(values)
+    }
+  }
+
 }
 
 sealed trait ContainerPageTab
@@ -277,3 +319,5 @@ case object TabTerminal extends ContainerPageTab
 case object TabTop extends ContainerPageTab
 
 case object TabChanges extends ContainerPageTab
+
+case object TabStats extends ContainerPageTab

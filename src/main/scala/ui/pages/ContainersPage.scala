@@ -3,36 +3,40 @@ package ui.pages
 import api.DockerClientConfig
 import japgolly.scalajs.react.vdom.prefix_<^._
 import japgolly.scalajs.react.{BackendScope, ReactComponentB}
-import model.{Container, ContainersInfo}
+import model.Container
 import ui.WorkbenchRef
 import ui.widgets.{Alert, Button}
 import util.logger._
 
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.Future
 
 object ContainersPage extends Page {
 
   val id = "Containers"
 
-  case class State(info: ContainersInfo = ContainersInfo(), error: Option[String] = None)
+  case class State(running: Seq[Container] = Seq.empty, history: Seq[Container] = Seq.empty, error: Option[String] = None)
 
   case class Props(ref: WorkbenchRef)
 
   case class Backend(t: BackendScope[Props, State]) {
-    def willMount(): Unit = t.props.ref.client.map { client =>
-      client.containersInfo().map { info =>
-        t.modState(s => State(info))
-      }.onFailure {
+    def willMount(): Unit = refresh()
+
+    def refresh():Future[Unit] = t.props.ref.client.map { client =>
+      client.containerRunning().map { running =>
+        t.modState(s => s.copy(running = running, error = None))
+        client.containersHistory(running).map { history =>
+          t.modState(s => s.copy(history = history))
+        }: Unit
+      }.recover{
         case ex: Exception =>
           log.error("ContainersPage", "Unable to get Metadata", ex)
           t.modState(s => s.copy(error = Some(s"Unable to connect")))
       }
-    }
+    }.getOrElse(Future.successful{})
 
-    def refresh() = willMount()
-
-    def garbageCollection() = t.props.ref.client.get.garbageCollectionContainers().map { info =>
-      t.modState(s => State(info))
+    def garbageCollection() = t.props.ref.client.get.garbageCollectionContainers().flatMap { _ =>
+      refresh()
     }
 
   }
@@ -56,11 +60,11 @@ object ContainersPageRender {
 
   def vdom(S: State, P: Props, B: Backend) = <.div(
     S.error.map(Alert(_, Some(P.ref.link(SettingsPage)))),
-    table("glyphicon glyphicon-transfer", "Container Running", S.info.running, showGC = false, P, B),
-    table("glyphicon glyphicon-equalizer", "History", S.info.history, showGC = true, P, B)
+    table("glyphicon glyphicon-transfer", "Container Running", S.running, showGC = false, showRefresh=true, P, B),
+    table("glyphicon glyphicon-equalizer", "History", S.history, showGC = true, showRefresh = false, P, B)
   )
 
-  def table(iconClassName: String, title: String, containers: Seq[Container], showGC: Boolean, props: Props, B: Backend) =
+  def table(iconClassName: String, title: String, containers: Seq[Container], showGC: Boolean, showRefresh: Boolean, props: Props, B: Backend) =
     <.div(^.className := "container  col-sm-12",
       <.div(^.className := "panel panel-default  bootcards-summary",
         <.div(^.className := "panel-heading clearfix",
@@ -68,28 +72,34 @@ object ContainersPageRender {
           (showGC && containers.size > DockerClientConfig.KeepInGarbageCollection) ?= <.span(^.className := "pull-right",
             Button("Garbage Collection", "glyphicon-trash",
               "Removes all unused containers, keeping the 10 recent once")(B.garbageCollection)
+          ),
+          showRefresh?= <.span(^.className := "pull-right",
+            Button("Refresh", "glyphicon-refresh",
+              "Refresh containers")(B.refresh)
           )
         ),
-        <.table(^.className := "table table-hover table-striped",
+        <.table(^.className := "table table-hover table-striped break-text",
           <.thead(
             <.tr(
-              <.th("Id"),
-              <.th("Image"),
-              <.th("Command"),
-              <.th("Ports"),
-              <.th("Created"),
-              <.th("Status")
+              <.th("Id", ^.className:="col-xs-2 col-sm-2 col-md-2"),
+              <.th("Image",^.className:="col-xs-4 col-sm-3 col-md-3"),
+              <.th("Command",^.className:="hidden-xs hidden-sm col-md-2"),
+              <.th("Ports",^.className:="hidden-xs col-sm-2 col-md-2"),
+              <.th("Created",^.className:="col-xs-2 col-sm-2 col-md-2"),
+              <.th("Status",^.className:="col-xs-4 col-sm-3 col-md-2")
             )
           ),
           <.tbody(
             containers.map { c =>
               <.tr(
-                <.td(props.ref.link(ContainerPage(c.Id, props.ref))(c.id)),
+                <.td(props.ref.link(ContainerPage(c.Id, props.ref))(c.id),
+                  <.div(<.small(c.Names.headOption.map(_.replaceFirst("/",""))))
+                ),
                 <.td(c.Image),
-                <.td(c.Command),
-                <.td(c.ports.map(<.div(_))),
-                <.td(c.created),
-                <.td(c.Status)
+                <.td(^.className:="hidden-xs hidden-sm",c.Command),
+                <.td(^.className:="hidden-xs", c.ports.map(<.div(_))),
+                <.td(^.className:="break-by-word", c.created),
+                <.td(^.className:="break-by-word", c.Status)
               )
             }
           )
