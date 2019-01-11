@@ -1,5 +1,8 @@
 ## Docker UI
- |PyPI version| |Docs| |Build| |Coverage| |Quality| |License|
+=== 
+|PyPI version| |Docs| |Build| |Coverage| |Quality| |License|
+ 
+ 
 Simple Docker UI for Chrome is an unofficial developer tool for monitoring and managing your local Docker containers.
 
 <a target="_blank" href="https://chrome.google.com/webstore/detail/jfaelnolkgonnjdlkfokjadedkacbnib">
